@@ -1,4 +1,4 @@
-import pandas as pd
+import json
 from threading import Lock
 from datetime import datetime
 import uvicorn
@@ -71,12 +71,15 @@ async def bivariate_cut(options_cut: model.SquareCutOptions):
     return JSONResponse(content={"result_maps":result_maps})
 
 @app.get("/history-cut", tags=["history-cut"])
-async def history_cut(start_date: str):
-    df = pd.read_json(data_file)
-    df['id'] = pd.to_datetime(df['id'])
-    desired_datas_data = df[df['id'] >= start_date]
-
-    return desired_datas_data
+async def history_cut(start_date: str | None = None):
+    try:
+        with open(data_file, 'r') as file:
+            records = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        records = []
+    if start_date:
+        records = [record for record in records if record.get('id', '') >= start_date]
+    return list(reversed(records))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
