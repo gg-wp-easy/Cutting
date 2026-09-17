@@ -40,9 +40,9 @@ def restore_cuts(maps, linear_cutting, blade_thickness):
     for i in range(len(maps)):
         for j in range(len(maps[i])):
             # if j == 0:
-            # maps[i][j] = int(math.ceil(maps[i][j] + 2 * linear_cutting - blade_thickness))
+            # maps[i][j] = maps[i][j] + 2 * linear_cutting - blade_thickness
             if j != len(maps[i]) - 1:
-                maps[i][j] = int(math.ceil(maps[i][j] + 2 * linear_cutting - blade_thickness))
+                maps[i][j] = maps[i][j] + 2 * linear_cutting - blade_thickness
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def prepare_cuts(original_length, cuts_length, blade_thickness, cutting_angle, o
     for i in range(len(cuts_length)):
         cuts_length[i] = math.ceil(cuts_length[i] - 2 * length_cutting)
         cuts_length[i] += blade_thickness
-        cuts_length[i] = int(cuts_length[i])
+        # Preserve fractional kerf; the optimizer uses exact decimal units.
 
     original_length += blade_thickness
     return length_cutting
@@ -92,6 +92,8 @@ def recycle_maps_remains(original_length, cuts_length, maps):
 # ----------------------------------------------------------------------------------------------------------------------
 def reсycle_maps(original_length, cuts_length, maps):
     result_maps = []
+    if not maps:
+        return result_maps
     if len(cuts_length) != len(maps[0]):
         for i in range(len(maps)):
             map = []
@@ -244,125 +246,19 @@ def place_rectangles(total_area, smaller_rectangles, smaller_rect_count):
 """ здесь начинается описание методов решения задач раскроя"""
 """ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% """
 def linear_cut_method_multi(original_length, cuts_length, cuts_count):
-    # создаем карты раскроя и остатки
-    possible_cuts, remainders = linear_cutting_multi(original_length, cuts_length, cuts_count)
+    from optimizer import optimize
+    return optimize(original_length, cuts_length, cuts_count)['maps']
 
-    possible_cuts = merge_3d_array_to_2d(possible_cuts)
-    remainders = merge_3d_array_to_2d(remainders)
 
-    # транспонируем матрицу для системы уравнений
-    A = transpose_matrix(possible_cuts)
-
-    # создаем описание задачи раскроя
-    prob = pulp.LpProblem("Cutting Problem", pulp.LpMinimize)
-
-    # создаем переменные, одна переменная - вариант раскроя
-    num_variables = len(possible_cuts)
-    x = [pulp.LpVariable(f'x{i}', lowBound=0, cat='Integer') for i in range(1, num_variables + 1)]
-
-    # задаем функцию, которую нужно минизировать
-    prob += pulp.lpDot(remainders, x)
-
-    # задаем ограничения (коэффициенты справа)
-    rhs_values = cuts_count
-
-    # строим матрицу коэффициентов
-    constraints_coefficients = [tuple(comb) for comb in A]
-
-    # составляем систему уравнений
-    for i, constraint_coefficients in enumerate(constraints_coefficients):
-        prob += pulp.lpDot(constraint_coefficients, x) == rhs_values[i]
-
-    status = prob.solve(PULP_CBC_CMD(timeLimit=5))
-
-    if status == pulp.LpStatusOptimal:
-        result_maps = []
-        for v in prob.variables():
-            if v.varValue != 0.0:
-                var_index = int(v.name[1:]) - 1  # Получение индекса переменной из имени
-                for j in range(int(v.varValue)):
-                    result_maps.append(possible_cuts[var_index])
-                print(v.name, "=", v.varValue)
-
-        print("Суммарная потеря материала:", pulp.value(prob.objective))
-        print_arr(result_maps)
-        return result_maps
-    else:
-        print(pulp.LpStatus)
-        return []
-
-# решение задачи линейного раскроя методом линейного программирования
-# ----------------------------------------------------------------------------------------------------------------------
 def linear_cut_method(original_length, cuts_length, cuts_count):
-    # создаем карты раскроя и остатки
-    possible_cuts, remainders = linear_cutting(original_length, cuts_length, cuts_count)
-
-    # транспонируем матрицу для системы уравнений
-    A = transpose_matrix(possible_cuts)
-
-    # создаем описание задачи раскроя
-    prob = pulp.LpProblem("Cutting Problem", pulp.LpMinimize)
-
-    # создаем переменные, одна переменная - вариант раскроя
-    num_variables = len(possible_cuts)
-    x = [pulp.LpVariable(f'x{i}', lowBound=0, cat='Integer') for i in range(1, num_variables + 1)]
-
-    # задаем функцию, которую нужно минизировать
-    prob += pulp.lpDot(remainders, x)
-
-    # задаем ограничения (коэффициенты справа)
-    rhs_values = cuts_count
-
-    # строим матрицу коэффициентов
-    constraints_coefficients = [tuple(comb) for comb in A]
-
-    # составляем систему уравнений
-    for i, constraint_coefficients in enumerate(constraints_coefficients):
-        prob += pulp.lpDot(constraint_coefficients, x) == rhs_values[i]
-
-    status = prob.solve(PULP_CBC_CMD(timeLimit=5))
-
-    if status == pulp.LpStatusOptimal:
-        result_maps = []
-        for v in prob.variables():
-            if v.varValue != 0.0:
-                var_index = int(v.name[1:]) - 1  # Получение индекса переменной из имени
-                for j in range(int(v.varValue)):
-                    result_maps.append(possible_cuts[var_index])
-                print(v.name, "=", v.varValue)
-
-        print("Суммарная потеря материала:", pulp.value(prob.objective))
-        print_arr(result_maps)
-        return result_maps
-    else:
-        print(pulp.LpStatus)
-        return []
+    from optimizer import optimize
+    return [row[:-1] for row in optimize([original_length], cuts_length, cuts_count)['maps']]
 
 
-# ----------------------------------------------------------------------------------------------------------------------
-
-# решение задачи линейного раскроя жадным алгоритмом
-# ----------------------------------------------------------------------------------------------------------------------
 def find_optimal_maps(original_length, cuts_length, counts):
-    maps, remains = linear_cutting(original_length, cuts_length, counts)
-    for i in range(len(maps)):
-        maps[i].append(remains[i])
-    sorted_maps = sorted(maps, key=lambda x: (-x[0], x[-1]))
-    # print_arr(sorted_maps)
-    selected_maps = []
-    current_counts = [0] * len(counts)
-    for i in range(len(sorted_maps)):
-        if sorted_maps[i][-1] == original_length:
-            continue
-        temp_map = sorted_maps[i]
-        temp_map = temp_map[:-1]
-        if sum_and_compare(temp_map, current_counts, counts):
-            selected_maps.append(sorted_maps[i])
-            current_counts = sum_array(current_counts, temp_map)
+    from optimizer import optimize
+    return optimize([original_length], cuts_length, counts)['maps']
 
-    print_arr(selected_maps)
-    return selected_maps
-# ----------------------------------------------------------------------------------------------------------------------
 
 # размещение двумерных заготовок на площади
 # ----------------------------------------------------------------------------------------------------------------------

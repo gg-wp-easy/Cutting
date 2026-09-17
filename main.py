@@ -1,7 +1,9 @@
 import pandas as pd
+from threading import Lock
 from datetime import datetime
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from optimizer import optimize
 from fastapi.middleware.cors import CORSMiddleware
 import service
 import model
@@ -9,11 +11,13 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 data_file = 'data.json'
+history_lock = Lock()
 
 # Настройка CORS middleware
 origins = [
     "http://localhost",
-    "https://localhost:3000",
+    "http://localhost:3000",
+    "null",
 ]
 
 app.add_middleware(
@@ -25,77 +29,37 @@ app.add_middleware(
 )
 
 
+def calculate(options, stocks):
+    try:
+        result = optimize(stocks, options.cut_length, options.cut_count,
+                          options.blade_thickness, options.cutting_angle, options.original_thickness)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return result
+
+
 @app.post("/linear-cut/", tags=["linear-cut"])
-async def linear_cut(options_cut: model.LinearCutOptions):
-    original_length = options_cut.original_length
-    cuts_length = options_cut.cut_length
-    cuts_count = options_cut.cut_count
-    blade_thickness = options_cut.blade_thickness
-    cutting_angle = options_cut.cutting_angle
-    original_thickness = options_cut.original_thickness
-
-    length_cutting = service.prepare_cuts(original_length, cuts_length, blade_thickness, cutting_angle,
-                                          original_thickness)
-    maps = service.linear_cut_method(original_length, cuts_length, cuts_count)
-
-    if len(maps) == 0:
-        return []
-    else:
-
-        new_maps = service.recycle_maps_remains(original_length, cuts_length, maps)
-        result_maps = service.reсycle_maps(original_length, cuts_length, maps)
-        service.restore_cuts(result_maps, length_cutting, blade_thickness)
-
-        data_in_bd = service.create_cutting_options(original_length, cuts_length, cuts_count,
-                                                    blade_thickness, original_thickness, cutting_angle)
-        record_in_bd = {
-            'id': datetime.now().isoformat(),
-            'data_input': data_in_bd,
-            'data_result': new_maps
-        }
-        service.write_in_json(record_in_bd, data_file)
-        return JSONResponse(content={"result_maps": result_maps, "maps": new_maps})
+def linear_cut(options_cut: model.LinearCutOptions):
+    result = calculate(options_cut, [options_cut.original_length])
+    with history_lock:
+        service.write_in_json({'id': datetime.now().isoformat(),
+                               'data_input': options_cut.model_dump(), 'data_result': result['maps']}, data_file)
+    return result
 
 
 @app.post("/linear-cut-dynamic", tags=["linear-cut-dynamic"])
-async def linear_cut_dynamic(options_cut: model.LinearCutOptions):
-    original_length = options_cut.original_length
-    cuts_length = options_cut.cut_length
-    cuts_count = options_cut.cut_count
-    blade_thickness = options_cut.blade_thickness
-    cutting_angle = options_cut.cutting_angle
-    original_thickness = options_cut.original_thickness
-    length_cutting = service.prepare_cuts(original_length, cuts_length, blade_thickness, cutting_angle,
-                                          original_thickness)
-    maps = service.find_optimal_maps(original_length, cuts_length, cuts_count)
-
-    result_maps = service.reсycle_maps(original_length, cuts_length, maps)
-    service.restore_cuts(result_maps, length_cutting, blade_thickness)
-    return JSONResponse(content={"result_maps": result_maps, "maps": maps})
+def linear_cut_dynamic(options_cut: model.LinearCutOptions):
+    return calculate(options_cut, [options_cut.original_length])
 
 
 @app.post("/linear-multi-cut", tags=["linear-multi-cut-dynamic"])
-async def linear_multi_cut(options_cut: model.LinearMultiCutOptions):
-    originals_length = options_cut.originals_length
-    cut_length = options_cut.cut_length
-    cut_count = options_cut.cut_count
-    blade_thickness = options_cut.blade_thickness
-    cutting_angle = options_cut.cutting_angle
-    original_thickness = options_cut.original_thickness
-    length_cutting = service.prepare_cuts(originals_length[0], cut_length, blade_thickness, cutting_angle,
-                                          original_thickness)
-    maps = service.linear_cut_method_multi(originals_length, cut_length, cut_count)
-    data_in_bd = service.create_cutting_options(originals_length[0], cut_length, cut_count,
-                                                blade_thickness, original_thickness, cutting_angle)
-    record_in_bd = {
-        'id': datetime.now().isoformat(),
-        'data_input': data_in_bd,
-        'data_result': maps
-    }
-    service.write_in_json(record_in_bd, data_file)
-    result_maps = service.reсycle_maps(originals_length[0], cut_length, maps)
-    service.restore_cuts(result_maps, length_cutting, blade_thickness)
-    return JSONResponse(content={"result_maps": result_maps, "maps": maps})
+def linear_multi_cut(options_cut: model.LinearMultiCutOptions):
+    result = calculate(options_cut, options_cut.originals_length)
+    with history_lock:
+        service.write_in_json({'id': datetime.now().isoformat(),
+                               'data_input': options_cut.model_dump(), 'data_result': result['maps'],
+                               'stock_lengths': result['stock_lengths']}, data_file)
+    return result
 
 
 @app.post("/bivariate-cut")
@@ -113,13 +77,6 @@ async def history_cut(start_date: str):
     desired_datas_data = df[df['id'] >= start_date]
 
     return desired_datas_data
-
-@app.middleware("http")
-async def add_cors_header(request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
-    return response
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
